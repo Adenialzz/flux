@@ -4,8 +4,11 @@ import torch
 from torch import Tensor, nn
 
 from flux.modules.layers import (DoubleStreamBlock, EmbedND, LastLayer,
-                                 MLPEmbedder, SingleStreamBlock,
+                                 MLPEmbedder, SingleStreamBlock, ImageProjModel, IPDoubleStreamBlockProcessor,
                                  timestep_embedding)
+
+from transformers import CLIPVisionModelWithProjection, CLIPImageProcessor 
+from typing import Dict
 
 
 @dataclass
@@ -73,6 +76,104 @@ class Flux(nn.Module):
         )
 
         self.final_layer = LastLayer(self.hidden_size, 1, self.out_channels)
+        self.ip_loaded = False
+
+    @property
+    def attn_processors(self) -> Dict[str, torch.nn.Module]:
+        # set recursively
+        processors = {}
+
+        def fn_recursive_add_processors(name: str, module: torch.nn.Module, processors):
+            if hasattr(module, "set_processor"):
+                processors[f"{name}.processor"] = module.processor
+
+            for sub_name, child in module.named_children():
+                fn_recursive_add_processors(f"{name}.{sub_name}", child, processors)
+
+            return processors
+
+        for name, module in self.named_children():
+            fn_recursive_add_processors(name, module, processors)
+
+        return processors
+
+
+    def set_attn_processor(self, processor):
+        r"""
+        Sets the attention processor to use to compute attention.
+
+        Parameters:
+            processor (`dict` of `AttentionProcessor` or only `AttentionProcessor`):
+                The instantiated processor class or a dictionary of processor classes that will be set as the processor
+                for **all** `Attention` layers.
+
+                If `processor` is a dict, the key needs to define the path to the corresponding cross attention
+                processor. This is strongly recommended when setting trainable attention processors.
+
+        """
+        count = len(self.attn_processors.keys())
+
+        if isinstance(processor, dict) and len(processor) != count:
+            raise ValueError(
+                f"A dict of processors was passed, but the number of processors {len(processor)} does not match the"
+                f" number of attention layers: {count}. Please make sure to pass {count} processor classes."
+            )
+
+        def fn_recursive_attn_processor(name: str, module: torch.nn.Module, processor):
+            if hasattr(module, "set_processor"):
+                if not isinstance(processor, dict):
+                    module.set_processor(processor)
+                else:
+                    module.set_processor(processor.pop(f"{name}.processor"))
+
+            for sub_name, child in module.named_children():
+                fn_recursive_attn_processor(f"{name}.{sub_name}", child, processor)
+
+        for name, module in self.named_children():
+            fn_recursive_attn_processor(name, module, processor)
+
+    def load_ip_adapter(self, image_encoder_path: str, ip_model_path: str):
+        from songmisc.utils import load_safetensors
+
+        # unpack checkpoint
+        checkpoint = load_safetensors(ip_model_path)
+        prefix = "double_blocks."
+        blocks = {}
+        proj = {}
+
+        for key, value in checkpoint.items():
+            if key.startswith(prefix):
+                blocks[key[len(prefix):].replace('.processor.', '.')] = value
+            if key.startswith("ip_adapter_proj_model"):
+                proj[key[len("ip_adapter_proj_model."):]] = value
+
+        # load image encoder
+        self.image_encoder = CLIPVisionModelWithProjection.from_pretrained(image_encoder_path).to(
+            'cuda', dtype=torch.float16
+        )
+        self.clip_image_processor = CLIPImageProcessor()
+
+        # setup image embedding projection model
+        self.improj = ImageProjModel(4096, 768, 4)
+        self.improj.load_state_dict(proj)
+        self.improj = self.improj.to('cuda', dtype=torch.bfloat16)
+
+        ip_attn_procs = {}
+
+        for name, _ in self.attn_processors.items():
+            ip_state_dict = {}
+            for k in checkpoint.keys():
+                if name in k:
+                    ip_state_dict[k.replace(f'{name}.', '')] = checkpoint[k]
+            if ip_state_dict:
+                ip_attn_procs[name] = IPDoubleStreamBlockProcessor(4096, 3072)
+                ip_attn_procs[name].load_state_dict(ip_state_dict)
+                ip_attn_procs[name].to('cuda', dtype=torch.bfloat16)
+            else:
+                ip_attn_procs[name] = self.model.attn_processors[name]
+
+        self.set_attn_processor(ip_attn_procs)
+        self.ip_loaded = True
 
     def forward(
         self,
@@ -83,10 +184,22 @@ class Flux(nn.Module):
         timesteps: Tensor,
         y: Tensor,
         guidance: Tensor | None = None,
+        image_embeddings: Tensor | None = None, 
+        ip_scale: Tensor | float = 1.0, 
     ) -> Tensor:
         if img.ndim != 3 or txt.ndim != 3:
             raise ValueError("Input img and txt tensors must have 3 dimensions.")
 
+        if image_embeddings is not None:
+            if not self.ip_loaded:
+                raise AttributeError("must load ip-adapter when using image embeddings as reference")
+
+            image_proj = self.improj(image_embeddings)
+        else:
+            if self.ip_loaded:
+                raise AttributeError("image embeddings cannot be None whel ip-adapter is loaded, you may consider using embedding from a black image as dummy, see https://github.com/XLabs-AI/x-flux/blob/47495425dbed499be1e8e5a6e52628b07349cba2/src/flux/xflux_pipeline.py#L188")
+
+            
         # running on sequences img
         img = self.img_in(img)
         vec = self.time_in(timestep_embedding(timesteps, 256))
@@ -99,9 +212,16 @@ class Flux(nn.Module):
 
         ids = torch.cat((txt_ids, img_ids), dim=1)
         pe = self.pe_embedder(ids)
+        for index_block, block in enumerate(self.double_blocks):
+            img, txt = block(
+                img=img, 
+                txt=txt, 
+                vec=vec, 
+                pe=pe, 
+                image_proj=image_proj,
+                ip_scale=ip_scale, 
+            )
 
-        for block in self.double_blocks:
-            img, txt = block(img=img, txt=txt, vec=vec, pe=pe)
 
         img = torch.cat((txt, img), 1)
         for block in self.single_blocks:
