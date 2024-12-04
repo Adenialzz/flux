@@ -19,6 +19,7 @@ from transformers import pipeline
 
 from flux.sampling import denoise, get_schedule, prepare, unpack
 from flux.util import (configs, embed_watermark, load_ae, load_clip, load_flow_model, load_t5)
+from flux.schema import RFEditInfo
 
 @dataclass
 class SamplingOptions:
@@ -114,9 +115,11 @@ class FluxEditor:
             self.t5, self.clip = self.t5.to(self.device), self.clip.to(self.device)
 
         #############inverse#######################
-        info = {}
-        info['feature'] = {}
-        info['inject_step'] = inject_step
+        # info = {}
+        # info['feature'] = {}
+        # info['inject_step'] = inject_step
+        info = RFEditInfo()
+        info.inject_step = inject_step
 
         if not os.path.exists(self.feature_path):
             os.mkdir(self.feature_path)

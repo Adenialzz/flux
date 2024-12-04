@@ -8,6 +8,7 @@ from torch import Tensor, nn
 from flux.math import attention, rope
 
 import os
+from ..schema import RFEditInfo
 
 class EmbedND(nn.Module):
     def __init__(self, dim: int, theta: int, axes_dim: list[int]):
@@ -235,7 +236,7 @@ class SingleStreamBlock(nn.Module):
         self.mlp_act = nn.GELU(approximate="tanh")
         self.modulation = Modulation(hidden_size, double=False)
 
-    def forward(self, x: Tensor, vec: Tensor, pe: Tensor, info) -> Tensor:
+    def forward(self, x: Tensor, vec: Tensor, pe: Tensor, info: RFEditInfo) -> tuple[Tensor, RFEditInfo]:
         mod, _ = self.modulation(vec)
         x_mod = (1 + mod.scale) * self.pre_norm(x) + mod.shift
         qkv, mlp = torch.split(self.linear1(x_mod), [3 * self.hidden_size, self.mlp_hidden_dim], dim=-1)
@@ -245,19 +246,26 @@ class SingleStreamBlock(nn.Module):
 
         # Note: If the memory of your device is not enough, you may consider uncomment the following code.
         # if info['inject'] and info['id'] > 19:
-        #     store_path = os.path.join(info['feature_path'], str(info['t']) + '_' + str(info['second_order']) + '_' + str(info['id']) + '_' + info['type'] + '_' + 'V' + '.pth')
-        #     if info['inverse']:
+        # if info.inject and info.block_id > 19:
+        #     # store_path = os.path.join(info['feature_path'], str(info['t']) + '_' + str(info['second_order']) + '_' + str(info['id']) + '_' + info['type'] + '_' + 'V' + '.pth')
+        #     store_path = os.path.join(info.feature_path, str(info.t) + '_' + str(info.second_order) + '_' + str(info.block_id) + '_' + info.block_type + '_' + 'V' + '.pth')
+
+        #     # if info['inverse']:
+        #     if info.inverse:
         #         torch.save(v, store_path)
-        #     if not info['inverse']:
+        #     # if not info['inverse']:
+        #     else:
         #         v = torch.load(store_path, weights_only=True)
 
         # Save the features in the memory
-        if info['inject'] and info['id'] > 19:
-            feature_name = str(info['t']) + '_' + str(info['second_order']) + '_' + str(info['id']) + '_' + info['type'] + '_' + 'V'
-            if info['inverse']:
-                info['feature'][feature_name] = v.cpu()
+        # if info['inject'] and info['id'] > 19:
+        if info.inject and info.block_id > 19:
+            # feature_name = str(info['t']) + '_' + str(info['second_order']) + '_' + str(info['id']) + '_' + info['type'] + '_' + 'V'
+            feature_name = str(info.t) + '_' + str(info.second_order) + '_' + str(info.block_id) + '_' + info.block_type + '_' + 'V'
+            if info.inverse:
+                info.feature[feature_name] = v.cpu()
             else:
-                v = info['feature'][feature_name].cuda()
+                v = info.feature[feature_name].cuda()
 
         # compute attention
         attn = attention(q, k, v, pe=pe)

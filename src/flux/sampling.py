@@ -7,7 +7,7 @@ from torch import Tensor
 
 from .model import Flux
 from .modules.conditioner import HFEmbedder
-
+from .schema import RFEditInfo
 
 def prepare(t5: HFEmbedder, clip: HFEmbedder, img: Tensor, prompt: str | list[str]) -> dict[str, Tensor]:
     bs, c, h, w = img.shape
@@ -84,12 +84,13 @@ def denoise(
     vec: Tensor,
     # sampling parameters
     timesteps: list[float],
-    inverse,
-    info, 
+    inverse: bool,
+    info: RFEditInfo, 
     guidance: float = 4.0
 ):
     # this is ignored for schnell
-    inject_list = [True] * info['inject_step'] + [False] * (len(timesteps[:-1]) - info['inject_step'])
+    # inject_list = [True] * info['inject_step'] + [False] * (len(timesteps[:-1]) - info['inject_step'])
+    inject_list = [True] * info.inject_step + [False] * (len(timesteps[:-1]) - info.inject_step)
 
     if inverse:
         timesteps = timesteps[::-1]
@@ -99,10 +100,14 @@ def denoise(
     step_list = []
     for i, (t_curr, t_prev) in enumerate(zip(timesteps[:-1], timesteps[1:])):
         t_vec = torch.full((img.shape[0],), t_curr, dtype=img.dtype, device=img.device)
-        info['t'] = t_prev if inverse else t_curr
-        info['inverse'] = inverse
-        info['second_order'] = False
-        info['inject'] = inject_list[i]
+        # info['t'] = t_prev if inverse else t_curr
+        # info['inverse'] = inverse
+        # info['second_order'] = False
+        # info['inject'] = inject_list[i]
+        info.t = t_prev if inverse else t_curr
+        info.inverse = inverse
+        info.second_order = False
+        info.inject = inject_list[i]
 
         pred, info = model(
             img=img,
@@ -118,7 +123,8 @@ def denoise(
         img_mid = img + (t_prev - t_curr) / 2 * pred
 
         t_vec_mid = torch.full((img.shape[0],), (t_curr + (t_prev - t_curr) / 2), dtype=img.dtype, device=img.device)
-        info['second_order'] = True
+        # info['second_order'] = True
+        info.second_order = True
         pred_mid, info = model(
             img=img_mid,
             img_ids=img_ids,

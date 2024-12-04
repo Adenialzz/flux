@@ -2,3 +2,5 @@ __pycache__/
 edit-result/
 
 imgs/
+*.egg-info/
+_version.py

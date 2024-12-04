@@ -6,7 +6,7 @@ from torch import Tensor, nn
 from flux.modules.layers import (DoubleStreamBlock, EmbedND, LastLayer,
                                  MLPEmbedder, SingleStreamBlock,
                                  timestep_embedding)
-
+from .schema import RFEditInfo
 
 @dataclass
 class FluxParams:
@@ -83,8 +83,8 @@ class Flux(nn.Module):
         timesteps: Tensor,
         y: Tensor,
         guidance: Tensor | None = None,
-        info = None,
-    ) -> Tensor:
+        info: RFEditInfo = RFEditInfo()
+    ) -> tuple[Tensor, RFEditInfo]:
         if img.ndim != 3 or txt.ndim != 3:
             raise ValueError("Input img and txt tensors must have 3 dimensions.")
 
@@ -106,9 +106,11 @@ class Flux(nn.Module):
 
         cnt = 0
         img = torch.cat((txt, img), 1) 
-        info['type'] = 'single'
+        # info['type'] = 'single'
+        info.block_type = 'single'
         for block in self.single_blocks:
-            info['id'] = cnt
+            # info['id'] = cnt
+            info.block_id = cnt
             img, info = block(img, vec=vec, pe=pe, info=info)
             cnt += 1
 

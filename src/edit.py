@@ -15,6 +15,7 @@ from flux.util import (configs, embed_watermark, load_ae, load_clip,
 from transformers import pipeline
 from PIL import Image
 import numpy as np
+from flux.schema import RFEditInfo
 
 import os
 
@@ -135,10 +136,14 @@ def main(
             torch.cuda.empty_cache()
             t5, clip = t5.to(torch_device), clip.to(torch_device)
 
-        info = {}
-        info['feature_path'] = args.feature_path
-        info['feature'] = {}
-        info['inject_step'] = args.inject
+        # info = {}
+        info = RFEditInfo()
+        # info['feature_path'] = args.feature_path
+        # info['feature'] = {}
+        # info['inject_step'] = args.inject
+        info.inject_step = args.inject
+        assert info.inject >= 0
+
         if not os.path.exists(args.feature_path):
             os.mkdir(args.feature_path)
 
